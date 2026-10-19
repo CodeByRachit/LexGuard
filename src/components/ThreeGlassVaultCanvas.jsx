@@ -35,12 +35,18 @@ export default function ThreeGlassVaultCanvas({ className = '', scale = 0.86 }) 
 
     updateCameraFraming(width / height);
 
-    // 2. Pure WebGL Renderer
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      alpha: true,
-      powerPreference: 'high-performance',
-    });
+    // 2. Pure WebGL Renderer with graceful fallback
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        powerPreference: 'high-performance',
+      });
+    } catch (e) {
+      console.warn('WebGL context creation failed for ThreeGlassVaultCanvas:', e);
+      return;
+    }
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
