@@ -176,6 +176,8 @@ def classify_cuad_category(clause_text: str, section_title: str = "") -> Optiona
     # 1. Match section title first with high-precision keywords
     if section_title:
         st_lower = section_title.lower()
+        if "lock-in" in st_lower or "lock in" in st_lower or ("term" in st_lower and "lock" in st_lower):
+            return "Termination / Lock-in Commitment"
         if "license grant" in st_lower or ("license" in st_lower and "grant" in st_lower):
             return "License Grant"
         if "intellectual property" in st_lower or "ip ownership" in st_lower or "invention" in st_lower:
@@ -196,6 +198,11 @@ def classify_cuad_category(clause_text: str, section_title: str = "") -> Optiona
             return "Governing Law"
         if "confidential" in st_lower:
             return "Confidentiality"
+
+    # Quick check for lock-in in combined clause text before generic dates
+    comb_lower = combined.lower()
+    if "lock-in period" in comb_lower or "lock in period" in comb_lower:
+        return "Termination / Lock-in Commitment"
 
     # 2. Rule-based regex pattern match on combined text
     for category, patterns in _CUAD_RULES:

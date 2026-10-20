@@ -150,7 +150,7 @@ class GemmaLocalClient:
             clause_id=clause.clause_id,
             page_number=clause.page_number,
             section_title=clause.section_title or f"Clause {clause.clause_id}",
-            explicit_text=clause.verbatim_text[:400],
+            explicit_text=clause.verbatim_text,
             plain_language_explanation=plain_lang,
             potential_ambiguities_and_risks=risks,
             confidence_badge=badge,

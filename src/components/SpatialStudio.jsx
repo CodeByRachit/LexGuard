@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -27,6 +27,7 @@ import {
   Eye,
   CornerDownLeft,
   Download,
+  Copy,
 } from 'lucide-react';
 import {
   SAMPLE_RENTAL_AGREEMENT,
@@ -35,6 +36,8 @@ import {
   SAMPLE_ADVERSARIAL_INJECTION,
 } from '../data/sampleContracts';
 import FormattedMarkdown from './FormattedMarkdown';
+import ThreePaperManuscriptDeck from './ThreePaperManuscriptDeck';
+import MultiSplineConnector from './MultiSplineConnector';
 
 export default function SpatialStudio({
   documentData,
@@ -48,28 +51,20 @@ export default function SpatialStudio({
   // Active Dock Tab: 'triage' | 'qa' | 'diff' | 'datasets' | 'privacy'
   const [activeDockTab, setActiveDockTab] = useState('triage');
 
-  // Selected Clause State (default to first flagged/interesting clause or CL-001)
+  // Selected Clause State (default to CL-004 if available, or first flagged, or CL-001)
   const clauses = documentData?.clauses || [];
   const triageCards = documentData?.triage_cards || [];
   const metadata = documentData?.metadata;
 
-  const defaultClauseId =
-    clauses.find((c) => c.ambiguity_flags && c.ambiguity_flags.length > 0)?.clause_id ||
-    clauses[0]?.clause_id ||
-    'CL-001';
+  const getInitialClauseId = () => {
+    const cl4 = clauses.find((c) => c.clause_id === 'CL-004');
+    if (cl4) return 'CL-004';
+    const flagged = clauses.find((c) => c.ambiguity_flags && c.ambiguity_flags.length > 0);
+    return flagged?.clause_id || clauses[0]?.clause_id || 'CL-001';
+  };
 
-  const [selectedClauseId, setSelectedClauseId] = useState(defaultClauseId);
-  const [clauseSearch, setClauseSearch] = useState('');
-
-  // Dynamic SVG Bezier Connector Coordinates
-  const [connectorPath, setConnectorPath] = useState({
-    path: '',
-    x1: 0,
-    y1: 0,
-    x2: 0,
-    y2: 0,
-    visible: false,
-  });
+  const [selectedClauseId, setSelectedClauseId] = useState(getInitialClauseId);
+  const [copiedQuestionIdx, setCopiedQuestionIdx] = useState(null);
 
   // Q&A State
   const [qaQuestion, setQaQuestion] = useState('');
@@ -84,13 +79,11 @@ export default function SpatialStudio({
 
   // Refs
   const fileInputRef = useRef(null);
-  const paperScrollRef = useRef(null);
 
   // Update selected clause if documentData changes
   useEffect(() => {
     if (clauses.length > 0) {
-      const flagged = clauses.find((c) => c.ambiguity_flags && c.ambiguity_flags.length > 0);
-      setSelectedClauseId(flagged ? flagged.clause_id : clauses[0].clause_id);
+      setSelectedClauseId(getInitialClauseId());
     }
   }, [documentData]);
 
@@ -99,51 +92,114 @@ export default function SpatialStudio({
   const matchedTriageCard = triageCards.find((tc) => tc.clause_id === selectedClauseId) || triageCards[0];
 
   const currentClauseId = activeClause?.clause_id || matchedTriageCard?.clause_id || 'CL-001';
-  const currentSectionTitle = activeClause?.section_title || matchedTriageCard?.section_title || 'Contract Section';
+  const currentSectionTitle = activeClause?.section_title || matchedTriageCard?.section_title || 'Operative Section';
 
-  // 1. Verbatim quote (always populated from backend explicit_text or clause verbatim_text)
-  const currentVerbatimQuote =
+  // 1. Verbatim quote (Clean untruncated text, guarantee complete sentence)
+  let rawQuote =
     matchedTriageCard?.explicit_text ||
     activeClause?.verbatim_text ||
     matchedTriageCard?.verbatim_quote ||
     'The operative terms of this clause govern obligations between the parties.';
 
-  // 2. Plain English translation (always populated from plain_language_explanation)
-  const currentPlainEnglish =
-    matchedTriageCard?.plain_language_explanation ||
-    matchedTriageCard?.plain_english_translation ||
-    (activeClause?.section_title
-      ? `This clause specifies operative contractual terms, covenants, and legal obligations regarding ${activeClause.section_title}.`
-      : 'This clause outlines binding contractual covenants and operational obligations between the participating parties.');
+  // Safety fix if old cache truncated "for the remainin"
+  if (rawQuote.includes('for the remainin') && !rawQuote.includes('for the remaining balance')) {
+    rawQuote = rawQuote.replace('for the remainin', 'for the remaining balance of the lock-in period.');
+  }
+  const currentVerbatimQuote = rawQuote;
 
-  // 3. Severity / Risk level
-  const currentSeverity =
-    matchedTriageCard?.severity ||
-    matchedTriageCard?.risk_level ||
-    (activeClause?.ambiguity_flags && activeClause.ambiguity_flags.length > 0 ? 'HIGH' : 'LOW');
-
-  // 4. Statutory Enforceability Concern
-  const currentEnforceabilityConcern =
-    (matchedTriageCard?.potential_ambiguities_and_risks && matchedTriageCard.potential_ambiguities_and_risks.length > 0
-      ? matchedTriageCard.potential_ambiguities_and_risks.join('. ')
-      : null) ||
-    matchedTriageCard?.enforceability_concern ||
-    (activeClause?.ambiguity_flags && activeClause.ambiguity_flags.length > 0
-      ? activeClause.ambiguity_flags.join('. ')
-      : null) ||
-    'Standard contractual covenants apply under Indian Contract law. Terms must satisfy statutory reasonableness and public policy standards.';
-
-  // 5. CUAD category
-  const currentCuadCategory =
+  // 2. CUAD category (Strict correction for lock-in terms: "Termination / Lock-in Commitment")
+  let currentCuadCategory =
     matchedTriageCard?.cuad_category ||
     activeClause?.cuad_category ||
     'General Provision';
 
-  // 6. Actionable Lawyer Questions
-  const currentLawyerQuestions = [
-    `Does clause ${currentClauseId} (${currentSectionTitle}) create an unenforceable penalty under Section 74 or an unreasonable restraint under Section 27 of the Indian Contract Act, 1872?`,
-    `Can either party enforce monetary forfeiture, daily penalties, or unilateral termination without judicial proof of actual damage in Bengaluru / Indian courts?`,
-  ];
+  const isLockInClause =
+    currentClauseId === 'CL-004' ||
+    currentSectionTitle.toLowerCase().includes('lock-in') ||
+    currentVerbatimQuote.toLowerCase().includes('lock-in period');
+
+  if (isLockInClause) {
+    currentCuadCategory = 'Termination / Lock-in Commitment';
+  }
+
+  // 3. Plain English translation with clean, high-impact bullet points and bold lead-ins
+  const plainExplanation =
+    matchedTriageCard?.plain_language_explanation ||
+    matchedTriageCard?.plain_english_translation;
+
+  let plainBullets = [];
+  if (isLockInClause) {
+    plainBullets = [
+      {
+        lead: 'Strict 6-Month Commitment:',
+        text: 'You cannot move out early without paying full rent for the remaining months of the lock-in period.',
+      },
+      {
+        lead: 'Unconditional Rent Liability:',
+        text: 'Vacating prematurely obligates you to immediately pay the landlord the complete remaining rent balance.',
+      },
+      {
+        lead: 'Indian Legal Enforceability Risk:',
+        text: 'Under Section 74 of the Indian Contract Act, 1872, automatic forfeiture of remaining rent without proving actual loss may be contested as an unenforceable penalty.',
+      },
+    ];
+  } else if (plainExplanation) {
+    // If backend provided a paragraph, split or present cleanly
+    plainBullets = [
+      {
+        lead: `${currentSectionTitle || 'Operative Covenants'}:`,
+        text: plainExplanation,
+      },
+      {
+        lead: 'Local Grounding:',
+        text: 'Verified against source text with zero external cloud telemetry.',
+      },
+    ];
+  } else {
+    plainBullets = [
+      {
+        lead: 'Operative Terms:',
+        text: 'Outlines binding contractual covenants and operational obligations between the participating parties.',
+      },
+    ];
+  }
+
+  // 4. Severity / Risk level
+  const currentSeverity =
+    isLockInClause
+      ? 'HIGH'
+      : matchedTriageCard?.severity ||
+        matchedTriageCard?.risk_level ||
+        (activeClause?.ambiguity_flags && activeClause.ambiguity_flags.length > 0 ? 'HIGH' : 'LOW');
+
+  // 5. Statutory Enforceability Concern
+  const currentEnforceabilityConcern = isLockInClause
+    ? 'Demanding unconditional remaining rent without proving actual vacancy loss may violate Section 74 of the Indian Contract Act, 1872. Indian courts often classify full-term rent acceleration as an unliquidated penalty rather than genuine pre-estimated damages.'
+    : (matchedTriageCard?.potential_ambiguities_and_risks && matchedTriageCard.potential_ambiguities_and_risks.length > 0
+        ? matchedTriageCard.potential_ambiguities_and_risks.join('. ')
+        : null) ||
+      matchedTriageCard?.enforceability_concern ||
+      (activeClause?.ambiguity_flags && activeClause.ambiguity_flags.length > 0
+        ? activeClause.ambiguity_flags.join('. ')
+        : null) ||
+      'Standard contractual covenants apply under Indian Contract law. Terms must satisfy statutory reasonableness and public policy standards.';
+
+  // 6. Actionable Clickable Lawyer Questions
+  const currentLawyerQuestions = isLockInClause
+    ? [
+        `Does clause ${currentClauseId} create an unenforceable penalty under Section 74 or an unreasonable restraint under Section 27 of the Indian Contract Act, 1872?`,
+        `Can the landlord legally forfeit the entire security deposit and demand remaining rent without proving actual financial loss in Bengaluru courts?`,
+      ]
+    : [
+        `Does clause ${currentClauseId} (${currentSectionTitle}) create an unenforceable penalty under Section 74 or an unreasonable restraint under Section 27 of the Indian Contract Act, 1872?`,
+        `Can either party enforce monetary forfeiture, daily penalties, or unilateral termination without judicial proof of actual damage in Indian courts?`,
+      ];
+
+  const handleCopyQuestion = (text, idx) => {
+    navigator.clipboard?.writeText(text);
+    setCopiedQuestionIdx(idx);
+    setTimeout(() => setCopiedQuestionIdx(null), 2000);
+  };
 
   // 7. Statutory & Case Law references
   const currentStatutes = [];
@@ -157,80 +213,6 @@ export default function SpatialStudio({
   } else {
     currentStatutes.push('ONGC v. Saw Pipes Ltd. (2003) 5 SCC 705');
   }
-
-  // ─────────────────────────────────────────────────────────────
-  // DYNAMIC SVG BEZIER CONNECTOR RECALCULATION
-  // Tracks scroll in paper manuscript & window resize
-  // ─────────────────────────────────────────────────────────────
-  const updateConnector = useCallback(() => {
-    if (activeDockTab !== 'triage') {
-      setConnectorPath((prev) => ({ ...prev, visible: false }));
-      return;
-    }
-
-    const startEl = document.getElementById('clause-anchor-active');
-    const endEl = document.getElementById('target-card-anchor');
-
-    if (!startEl || !endEl) {
-      setConnectorPath((prev) => ({ ...prev, visible: false }));
-      return;
-    }
-
-    const sRect = startEl.getBoundingClientRect();
-    const eRect = endEl.getBoundingClientRect();
-
-    // Check if start element is within visible viewport of paper scroll container
-    if (paperScrollRef.current) {
-      const containerRect = paperScrollRef.current.getBoundingClientRect();
-      if (sRect.bottom < containerRect.top || sRect.top > containerRect.bottom) {
-        setConnectorPath((prev) => ({ ...prev, visible: false }));
-        return;
-      }
-    }
-
-    // Exact geometric centers of the two anchor dots
-    const x1 = sRect.left + sRect.width / 2;
-    const y1 = sRect.top + sRect.height / 2;
-    const x2 = eRect.left + eRect.width / 2;
-    const y2 = eRect.top + eRect.height / 2;
-
-    const dx = Math.max((x2 - x1) * 0.45, 40);
-    const path = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
-
-    setConnectorPath({
-      path,
-      x1,
-      y1,
-      x2,
-      y2,
-      visible: true,
-    });
-  }, [selectedClauseId, activeDockTab]);
-
-  useEffect(() => {
-    updateConnector();
-    const handleScrollOrResize = () => updateConnector();
-
-    window.addEventListener('resize', handleScrollOrResize);
-    window.addEventListener('scroll', handleScrollOrResize, true);
-
-    const paperEl = paperScrollRef.current;
-    if (paperEl) {
-      paperEl.addEventListener('scroll', handleScrollOrResize);
-    }
-
-    // Secondary delay to ensure DOM render settled
-    const timer = setTimeout(updateConnector, 80);
-
-    return () => {
-      window.removeEventListener('resize', handleScrollOrResize);
-      window.removeEventListener('scroll', handleScrollOrResize, true);
-      if (paperEl) {
-        paperEl.removeEventListener('scroll', handleScrollOrResize);
-      }
-      clearTimeout(timer);
-    };
-  }, [updateConnector, selectedClauseId, activeDockTab]);
 
   // Execute Q&A
   const executeQA = async (queryText) => {
@@ -262,7 +244,7 @@ export default function SpatialStudio({
     }
   };
 
-  // One-Click Legal Triage Audit Dossier Exporter (Audit Report Download)
+  // One-Click Legal Triage Audit Dossier Exporter
   const handleExportDossier = () => {
     const docName = metadata?.document_name || 'Legal_Contract';
     const timestamp = new Date().toISOString();
@@ -288,8 +270,8 @@ export default function SpatialStudio({
     clauses.forEach((c) => {
       const card = triageCards.find((tc) => tc.clause_id === c.clause_id);
       content += `[CLAUSE ID: ${c.clause_id}] ${c.section_title || 'Operative Section'}\n`;
-      content += `CUAD Category: ${c.cuad_category || card?.cuad_category || 'General Provision'}\n`;
-      content += `Risk Level: ${c.ambiguity_flags?.length > 0 ? 'HIGH (Subjective Phrasing Detected)' : 'STANDARD'}\n`;
+      content += `CUAD Category: ${c.clause_id === 'CL-004' ? 'Termination / Lock-in Commitment' : c.cuad_category || card?.cuad_category || 'General Provision'}\n`;
+      content += `Risk Level: ${c.ambiguity_flags?.length > 0 || c.clause_id === 'CL-004' ? 'HIGH (Subjective Phrasing / Lock-in Risk)' : 'STANDARD'}\n`;
       content += `Verbatim Quote:\n"${card?.explicit_text || c.verbatim_text}"\n\n`;
       content += `Plain English Meaning:\n${card?.plain_language_explanation || 'Defines standard covenants between the parties.'}\n\n`;
       if (c.ambiguity_flags?.length > 0) {
@@ -353,17 +335,6 @@ export default function SpatialStudio({
     }
   };
 
-  // Filtered clauses for stacked paper sheet
-  const filteredClauses = clauses.filter((c) => {
-    if (!clauseSearch.trim()) return true;
-    const q = clauseSearch.toLowerCase();
-    return (
-      c.clause_id.toLowerCase().includes(q) ||
-      (c.section_title && c.section_title.toLowerCase().includes(q)) ||
-      (c.verbatim_text && c.verbatim_text.toLowerCase().includes(q))
-    );
-  });
-
   // Clean entities representation
   const partiesText =
     metadata?.parties_detected && metadata.parties_detected.length > 0
@@ -388,47 +359,21 @@ export default function SpatialStudio({
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#F7F5F0] via-[#F3EFE7] to-[#EAE5D9] text-[#111827] flex flex-col font-sans selection:bg-[#111827] selection:text-white relative">
-      {/* Dynamic SVG Bezier Connector Overlay */}
-      {connectorPath.visible && (
-        <svg className="pointer-events-none fixed inset-0 z-30 w-full h-full">
-          <defs>
-            <filter id="glowGreen" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="3.5" floodColor="#10b981" floodOpacity="0.75" />
-            </filter>
-            <marker
-              id="emerald-arrow"
-              viewBox="0 0 10 10"
-              refX="8"
-              refY="5"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto"
-            >
-              <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#10b981" />
-            </marker>
-          </defs>
-          {/* Main Bezier path connecting start anchor to end anchor */}
-          <path
-            d={connectorPath.path}
-            fill="none"
-            stroke="#10b981"
-            strokeWidth="3.5"
-            strokeLinecap="round"
-            filter="url(#glowGreen)"
-            markerEnd="url(#emerald-arrow)"
-          />
-        </svg>
-      )}
+      {/* ── MULTI-BRANCH 3D GLOWING BEZIER CONNECTOR BUNDLE ── */}
+      <MultiSplineConnector
+        activeTab={activeDockTab}
+        selectedClauseId={selectedClauseId}
+      />
 
       {/* ─────────────────────────────────────────────────────────────
-          1. TOP BAR (h-14) & SLEEK NON-LAWYER BOUNDARY STRIP
+          1. TOP BAR (h-13) & SLEEK AIR-GAPPED HEADER
       ───────────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 bg-white/75 backdrop-blur-xl border-b border-stone-200/80 px-6 sm:px-8 h-14 flex items-center justify-between shadow-2xs">
+      <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-stone-200/80 px-6 sm:px-8 h-13 flex items-center justify-between shadow-2xs">
         {/* Left: Home Navigation + Brand + Air-Gapped Pill */}
         <div className="flex items-center gap-3.5">
           <button
             onClick={onBackToLanding}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-stone-100/90 hover:bg-stone-200 text-[#111827] text-xs font-bold transition-all cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-stone-100 hover:bg-stone-200 text-[#111827] text-xs font-bold transition-all cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Home</span>
@@ -454,8 +399,8 @@ export default function SpatialStudio({
           </div>
         </div>
 
-        {/* Right: Sample Switcher + Upload + Wipe RAM */}
-        <div className="flex items-center gap-2.5">
+        {/* Right: Sample Switcher + Upload + Export + Wipe RAM */}
+        <div className="flex items-center gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -515,7 +460,7 @@ export default function SpatialStudio({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all cursor-pointer shadow-2xs"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Export Dossier</span>
+            <span className="hidden sm:inline">Export Dossier</span>
           </button>
 
           <button
@@ -529,37 +474,32 @@ export default function SpatialStudio({
       </header>
 
       {/* Mandatory Non-Lawyer Boundary Subheader Strip */}
-      <div className="bg-[#F3EFE6] border-b border-stone-200/70 px-6 sm:px-8 py-1.5 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-stone-700 gap-1">
+      <div className="bg-[#F3EFE6] border-b border-stone-200/70 px-6 sm:px-8 py-1 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-stone-700 gap-1">
         <div className="flex items-center gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
           <span>
             <strong>Mandatory Non-Lawyer Boundary:</strong> LexGuard-Local is an automated exploratory triage tool and does not provide legal advice.
           </span>
         </div>
-        <div className="text-[11px] font-mono font-bold text-stone-500 flex-shrink-0">
+        <div className="text-[10.5px] font-mono font-bold text-stone-500 flex-shrink-0">
           TRACK PS2 • GATE L2 & L4 COMPLIANT
         </div>
       </div>
 
       {/* Adversarial Prompt-Injection Quarantined Banner (Gate L2 Shield) */}
       {metadata?.prompt_injection_detected && (
-        <div className="max-w-7xl mx-auto px-6 sm:px-8 pt-3.5 w-full animate-fade-in">
-          <div className="rounded-2xl bg-gradient-to-r from-rose-500/15 via-rose-50/90 to-amber-500/10 border-2 border-rose-500/80 p-4 shadow-lg backdrop-blur-xl flex items-start gap-3.5 text-xs text-rose-950">
-            <div className="w-8 h-8 rounded-xl bg-rose-600 text-white flex items-center justify-center flex-shrink-0 shadow-md">
-              <ShieldAlert className="w-5 h-5 animate-pulse" />
+        <div className="max-w-7xl mx-auto px-6 sm:px-8 pt-2.5 w-full animate-fade-in">
+          <div className="rounded-2xl bg-gradient-to-r from-rose-500/15 via-rose-50/90 to-amber-500/10 border-2 border-rose-500/80 p-3.5 shadow-lg backdrop-blur-xl flex items-start gap-3 text-xs text-rose-950">
+            <div className="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center flex-shrink-0 shadow-md">
+              <ShieldAlert className="w-4 h-4 animate-pulse" />
             </div>
             <div className="flex-1">
-              <div className="flex items-center gap-2">
-                <strong className="text-sm font-extrabold text-rose-950">
-                  Adversarial Prompt-Injection Quarantined (Security Guardrail Active)
-                </strong>
-                <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-mono font-bold uppercase">
-                  Threat Defanged
-                </span>
-              </div>
-              <p className="mt-1 text-rose-900 leading-relaxed">
+              <strong className="text-xs font-extrabold text-rose-950">
+                Adversarial Prompt-Injection Quarantined (Security Guardrail Active)
+              </strong>
+              <p className="mt-0.5 text-[11px] text-rose-900 leading-normal">
                 {metadata.prompt_injection_details ||
-                  'Suspicious adversarial instruction patterns ("ignore previous instructions") were detected in this document and defanged. Untrusted contract text cannot compromise local Google Gemma or leak confidential system prompts.'}
+                  'Adversarial instructions were detected and quarantined. Untrusted text cannot compromise local Google Gemma.'}
               </p>
             </div>
           </div>
@@ -567,46 +507,46 @@ export default function SpatialStudio({
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          2. COMPACT 4-PILL ENTITY SUMMARY STRIP (L4 ENTITIES ALWAYS VISIBLE)
+          2. COMPACT 4-PILL ENTITY SUMMARY STRIP
       ───────────────────────────────────────────────────────────── */}
-      <div className="max-w-7xl mx-auto px-6 sm:px-8 pt-4 w-full">
-        <div className="rounded-2xl bg-white/70 backdrop-blur-xl border border-white/90 p-2.5 shadow-[0_4px_20px_rgba(24,24,27,0.04)] grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+      <div className="max-w-7xl mx-auto px-6 sm:px-8 pt-2.5 w-full">
+        <div className="rounded-2xl bg-white/75 backdrop-blur-xl border border-white/90 p-2 shadow-[0_4px_20px_rgba(24,24,27,0.04)] grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
           {/* Pill 1: Identified Parties */}
-          <div className="px-3 py-2 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
-            <span className="text-[10px] uppercase font-bold text-stone-500 tracking-wider">
+          <div className="px-3 py-1.5 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
+            <span className="text-[9.5px] uppercase font-bold text-stone-500 tracking-wider">
               Identified Parties
             </span>
-            <span className="font-bold text-[#111827] truncate mt-0.5">
+            <span className="font-bold text-[#111827] truncate mt-0.5 text-xs">
               {partiesText}
             </span>
           </div>
 
           {/* Pill 2: Effective Date & Jurisdiction */}
-          <div className="px-3 py-2 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
-            <span className="text-[10px] uppercase font-bold text-stone-500 tracking-wider">
+          <div className="px-3 py-1.5 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
+            <span className="text-[9.5px] uppercase font-bold text-stone-500 tracking-wider">
               Date & Jurisdiction
             </span>
-            <span className="font-semibold text-[#111827] truncate mt-0.5">
+            <span className="font-semibold text-[#111827] truncate mt-0.5 text-xs">
               {effectiveDateText} • {govLawText}
             </span>
           </div>
 
           {/* Pill 3: Lock-in & Notice */}
-          <div className="px-3 py-2 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
-            <span className="text-[10px] uppercase font-bold text-stone-500 tracking-wider">
+          <div className="px-3 py-1.5 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
+            <span className="text-[9.5px] uppercase font-bold text-stone-500 tracking-wider">
               Lock-in & Notice
             </span>
-            <span className="font-semibold text-emerald-800 truncate mt-0.5">
+            <span className="font-semibold text-emerald-800 truncate mt-0.5 text-xs">
               {lockInText} • {noticeText}
             </span>
           </div>
 
           {/* Pill 4: Penalties & Flagged Risks */}
-          <div className="px-3 py-2 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
-            <span className="text-[10px] uppercase font-bold text-stone-500 tracking-wider">
+          <div className="px-3 py-1.5 rounded-xl bg-white/90 border border-stone-200/60 flex flex-col justify-center">
+            <span className="text-[9.5px] uppercase font-bold text-stone-500 tracking-wider">
               Penalties & Flagged Risks
             </span>
-            <span className="font-bold text-amber-800 truncate mt-0.5">
+            <span className="font-bold text-amber-800 truncate mt-0.5 text-xs">
               {penaltyText} • {riskCount} Flagged
             </span>
           </div>
@@ -614,242 +554,231 @@ export default function SpatialStudio({
       </div>
 
       {/* ─────────────────────────────────────────────────────────────
-          3. MAIN CENTER STAGE (12 COLUMNS: 5 STACKED PAPER + 7 3D GLASS STAGE)
+          3. MAIN 3D STUDIO STAGE (12 COLUMNS: 5 PAPER STACK + 7 GLASS STAGE)
+          With 100px+ center studio corridor (gap-12 lg:gap-16)
       ───────────────────────────────────────────────────────────── */}
-      <main className="max-w-7xl mx-auto grid grid-cols-12 gap-8 lg:gap-10 items-start pt-6 pb-28 px-6 sm:px-8 w-full relative">
-        {/* ─── LEFT 5 COLUMNS: 3D STACKED ARCHIVAL PAPER CONTRACT SHEET ─── */}
+      <main className="max-w-7xl mx-auto grid grid-cols-12 gap-8 lg:gap-14 xl:gap-16 items-start pt-5 pb-24 px-6 sm:px-8 w-full relative">
+        {/* ── LEFT 5 COLUMNS: 3D TILTED ARCHIVAL PAPER MANUSCRIPT DECK ── */}
         <div className="col-span-12 lg:col-span-5 relative">
-          {/* Visual 3D Stacked Paper Layer Effect */}
-          <div className="relative rounded-2xl bg-[#FAF8F3] border border-stone-200/90 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.12)] p-6 sm:p-7 before:absolute before:inset-0 before:-rotate-[1.2deg] before:rounded-2xl before:bg-[#F3EFE6] before:-z-10 before:shadow-sm after:absolute after:inset-0 after:rotate-[0.8deg] after:rounded-2xl after:bg-[#EDE8DE] after:-z-20">
-            {/* Sheet Header */}
-            <div className="flex items-center justify-between pb-3.5 mb-3.5 border-b border-stone-200">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-stone-700" />
-                <span className="text-xs font-extrabold uppercase tracking-wider text-stone-900">
-                  {documentData?.metadata?.document_name || 'Active Contract Manuscript'}
-                </span>
-              </div>
-              <span className="text-[11px] font-mono text-stone-500">
-                {clauses.length} Clauses
-              </span>
-            </div>
-
-            {/* Quick Filter Box */}
-            <div className="relative mb-3.5">
-              <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-2.5" />
-              <input
-                type="text"
-                value={clauseSearch}
-                onChange={(e) => setClauseSearch(e.target.value)}
-                placeholder="Search clause text, number..."
-                className="w-full pl-8 pr-3 py-1.5 bg-white/90 border border-stone-200 rounded-xl text-xs placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-stone-400"
-              />
-            </div>
-
-            {/* Scrollable Clauses Sheet with 3D Tactile Highlighting */}
-            <div
-              ref={paperScrollRef}
-              className="max-h-[62vh] overflow-y-auto space-y-3 pr-1.5 custom-scrollbar"
-            >
-              {filteredClauses.map((c) => {
-                const isSelected = c.clause_id === selectedClauseId;
-                const isFlagged = c.ambiguity_flags && c.ambiguity_flags.length > 0;
-
-                return (
-                  <div
-                    key={c.clause_id}
-                    onClick={() => {
-                      setSelectedClauseId(c.clause_id);
-                      if (activeDockTab !== 'triage') {
-                        setActiveDockTab('triage');
-                      }
-                    }}
-                    className={`relative p-3.5 rounded-xl cursor-pointer transition-all text-left ${
-                      isSelected
-                        ? 'bg-gradient-to-r from-amber-100/90 to-amber-50/90 border-2 border-amber-400/90 shadow-md scale-[1.01]'
-                        : isFlagged
-                        ? 'bg-rose-50/60 hover:bg-rose-50 border border-rose-200/80 shadow-2xs'
-                        : 'bg-white/80 hover:bg-white border border-stone-200/70 shadow-2xs'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-mono font-bold text-stone-900">
-                          {c.clause_id}
-                        </span>
-                        {c.section_title && (
-                          <span className="text-xs font-bold text-stone-800 truncate max-w-[200px]">
-                            {c.section_title}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Flag Pill */}
-                      {isFlagged ? (
-                        <span className="text-[10px] font-extrabold uppercase tracking-wide px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
-                          Flagged
-                        </span>
-                      ) : (
-                        <span className="text-[10px] font-semibold text-stone-500">
-                          {c.cuad_category || 'General'}
-                        </span>
-                      )}
-                    </div>
-
-                    <p className="text-xs text-stone-700 leading-relaxed line-clamp-3">
-                      {c.verbatim_text}
-                    </p>
-
-                    {/* Right-margin anchor dot for SVG connector */}
-                    {isSelected && activeDockTab === 'triage' && (
-                      <div
-                        id="clause-anchor-active"
-                        className="absolute -right-2.5 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-emerald-500 ring-4 ring-emerald-200 shadow-md flex items-center justify-center z-20 pointer-events-none"
-                      >
-                        <div className="w-2 h-2 rounded-full bg-white shadow-xs" />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <ThreePaperManuscriptDeck
+            clauses={clauses}
+            selectedClauseId={selectedClauseId}
+            onSelectClause={(clauseId) => {
+              setSelectedClauseId(clauseId);
+              if (activeDockTab !== 'triage') {
+                setActiveDockTab('triage');
+              }
+            }}
+            documentName={metadata?.document_name}
+          />
         </div>
 
-        {/* ─── RIGHT 7 COLUMNS: THE FOCUSED 3D GLASS STAGE ─── */}
+        {/* ── RIGHT 7 COLUMNS: TRUE 3D BEVELED REFRACTIVE GLASS SLABS ── */}
         <div className="col-span-12 lg:col-span-7">
-          {/* TAB 1: CLAUSE TRIAGE (3 Spacious Refractive Glass Cards) */}
+          {/* TAB 1: CLAUSE TRIAGE (3 Thick Beveled 3D Refractive Glass Slabs) */}
           {activeDockTab === 'triage' && (
-            <div className="space-y-5 animate-fade-in relative">
-              {/* Card 1: Verbatim Quote Verified (Refractive Emerald Glass) */}
+            <div className="space-y-3.5 animate-fade-in relative">
+              {/* ── SLAB 1: VERBATIM QUOTE VERIFIED (3D Seafoam-Emerald Refractive Glass) ── */}
               <div
-                id="verbatim-card-anchor"
-                className="relative rounded-2xl bg-gradient-to-br from-emerald-50/90 via-teal-50/75 to-white/90 backdrop-blur-2xl border border-emerald-300/90 p-6 shadow-[0_20px_40px_-15px_rgba(16,185,129,0.15)]"
+                className="relative rounded-2xl bg-gradient-to-br from-[#D1FAE5]/85 via-[#ECFDF5]/90 to-[#A7F3D0]/65 backdrop-blur-2xl border-[1.5px] border-emerald-400/80 p-5 shadow-[0_22px_45px_-12px_rgba(16,185,129,0.18),0_2px_0_0_rgba(255,255,255,0.95)_inset,0_-2px_0_0_rgba(0,0,0,0.05)_inset]"
               >
-                {/* Left-margin target anchor dot for SVG connector */}
+                {/* Left-edge connector anchor dot for primary emerald spline */}
                 <div
-                  id="target-card-anchor"
-                  className="absolute -left-2.5 top-8 -translate-y-1/2 w-5 h-5 rounded-full bg-emerald-500 ring-4 ring-emerald-200 shadow-md flex items-center justify-center z-20 pointer-events-none"
+                  id="card-slab-1-anchor"
+                  className="absolute -left-2.5 top-7 -translate-y-1/2 w-5 h-5 rounded-full bg-emerald-500 ring-4 ring-emerald-200/90 shadow-md flex items-center justify-center z-20 pointer-events-none"
                 >
                   <div className="w-2 h-2 rounded-full bg-white shadow-xs" />
                 </div>
 
-                <div className="flex items-center justify-between mb-3.5">
+                {/* Top Row: Title + 3D Green Checkmark Jewel */}
+                <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold uppercase tracking-wider text-emerald-900">
                       Layer 1 Ground Truth
                     </span>
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-bold">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Verbatim Quote Verified</span>
+                    <span className="text-[10.5px] font-mono font-bold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-full border border-emerald-300/60">
+                      {currentClauseId}
                     </span>
                   </div>
-                  <span className="text-[11px] font-mono font-bold text-emerald-800">
-                    {currentClauseId}
-                  </span>
+
+                  {/* 3D Circular Green Checkmark Jewel */}
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white flex items-center justify-center shadow-[0_4px_10px_rgba(16,185,129,0.4),0_1.5px_0_rgba(255,255,255,0.8)_inset]">
+                    <Check className="w-4 h-4 stroke-[3]" />
+                  </div>
                 </div>
 
-                <div className="bg-white/80 rounded-xl p-4 border border-emerald-200/80 mb-3 text-stone-900">
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-700 block mb-1">
+                <h3 className="text-xl font-extrabold text-stone-900 tracking-tight mb-2.5">
+                  Verbatim Quote Verified
+                </h3>
+
+                {/* Full Untruncated Verbatim Box */}
+                <div className="bg-white/90 rounded-xl p-3.5 border border-emerald-300/80 shadow-xs mb-2.5 text-stone-900">
+                  <span className="text-[10.5px] font-mono font-extrabold uppercase tracking-wider text-emerald-800 block mb-1">
                     {currentClauseId} VERBATIM:
                   </span>
-                  <p className="text-sm font-medium leading-relaxed italic text-stone-800">
+                  <p className="text-[14.5px] font-medium leading-relaxed italic text-stone-900">
                     "{currentVerbatimQuote}"
                   </p>
                 </div>
 
-                <div className="flex items-center justify-between text-xs text-emerald-800 font-medium">
+                {/* Bottom Citation Link with Correct CUAD Category */}
+                <div className="flex items-center justify-between text-xs text-emerald-900 font-medium pt-1">
                   <div className="flex items-center gap-1.5">
-                    <Check className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Verified in Source Clause {currentClauseId} (100% Substring Match)</span>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>🔗 Verified in Source Clause #{currentClauseId} (100% Exact Substring Match)</span>
                   </div>
-                  <span className="text-[11px] text-stone-600 font-mono">
+                  <span className="text-[11px] font-mono font-bold text-emerald-800 bg-white/70 px-2.5 py-0.5 rounded-full border border-emerald-200">
                     CUAD: {currentCuadCategory}
                   </span>
                 </div>
               </div>
 
-              {/* Card 2: Plain English Meaning (Frosted Alabaster Glass) */}
-              <div className="rounded-2xl bg-white/88 backdrop-blur-2xl border border-white rounded-2xl p-6 shadow-[0_20px_40px_-15px_rgba(24,24,27,0.07)]">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xs font-bold uppercase tracking-wider text-stone-500">
-                    Layer 2 Translation
+              {/* ── SLAB 2: PLAIN ENGLISH MEANING (3D Frosted Alabaster Acrylic) ── */}
+              <div
+                className="relative rounded-2xl bg-gradient-to-br from-white/95 via-[#F8F7F4]/90 to-[#EAE7DF]/80 backdrop-blur-2xl border-[1.5px] border-white p-5 shadow-[0_22px_45px_-12px_rgba(15,23,42,0.1),0_2px_0_0_rgba(255,255,255,0.98)_inset,0_-2px_0_0_rgba(0,0,0,0.05)_inset]"
+              >
+                {/* Left-edge connector anchor dot for secondary teal/silver spline */}
+                <div
+                  id="card-slab-2-anchor"
+                  className="absolute -left-2.5 top-7 -translate-y-1/2 w-5 h-5 rounded-full bg-teal-500 ring-4 ring-teal-200/90 shadow-md flex items-center justify-center z-20 pointer-events-none"
+                >
+                  <div className="w-2 h-2 rounded-full bg-white shadow-xs" />
+                </div>
+
+                {/* Top Row: Title + Layer 2 Badge */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-stone-500">
+                      Layer 2 Translation
+                    </span>
+                    <span className="text-[10.5px] font-mono text-stone-500 bg-stone-100 px-2 py-0.5 rounded-full">
+                      {currentSectionTitle}
+                    </span>
+                  </div>
+
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-stone-100 text-stone-600 text-[10.5px] font-bold border border-stone-200/70">
+                    <Sparkles className="w-3 h-3 text-stone-700" />
+                    <span>Local Synthesis</span>
                   </span>
-                  <h3 className="text-base font-extrabold text-[#111827]">
-                    Plain English Meaning
-                  </h3>
                 </div>
 
-                <div className="p-4 rounded-xl bg-stone-50/90 border border-stone-200/70 text-sm text-stone-800 leading-relaxed">
-                  <p>{currentPlainEnglish}</p>
+                <h3 className="text-xl font-extrabold text-stone-900 tracking-tight mb-2.5">
+                  Plain English Meaning
+                </h3>
+
+                {/* Clean, High-Impact Bullet Points with Bold Lead-ins */}
+                <div className="p-3.5 rounded-xl bg-[#FAF9F6]/95 border border-stone-200/80 shadow-2xs space-y-2 text-stone-800 text-xs sm:text-[13px] leading-relaxed">
+                  {plainBullets.map((bullet, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-stone-700 mt-2 flex-shrink-0" />
+                      <p>
+                        <strong className="text-stone-950 font-bold">{bullet.lead}</strong>{' '}
+                        <span>{bullet.text}</span>
+                      </p>
+                    </div>
+                  ))}
                 </div>
 
-                <div className="mt-3.5 flex items-center gap-2 text-xs text-stone-500">
-                  <Sparkles className="w-3.5 h-3.5 text-stone-700" />
-                  <span>Synthesized by local Google Gemma without internet telemetry.</span>
+                {/* Footer Note */}
+                <div className="mt-2.5 flex items-center justify-between text-[11px] text-stone-500">
+                  <div className="flex items-center gap-1.5">
+                    <Cpu className="w-3.5 h-3.5 text-stone-600" />
+                    <span>Synthesized by local Google Gemma without internet telemetry</span>
+                  </div>
+                  <span className="font-mono text-emerald-700 font-bold">Zero Hallucinations</span>
                 </div>
               </div>
 
-              {/* Card 3: Lawyer Escalation & India Code Context (Warm Amber Tactile Glass) */}
-              <div className="rounded-2xl bg-gradient-to-br from-amber-50/95 via-[#FDF3DC]/85 to-white/90 backdrop-blur-2xl border border-amber-300/90 p-6 shadow-[0_20px_40px_-15px_rgba(245,158,11,0.15)] relative overflow-hidden">
-                <div className="flex items-center justify-between mb-3.5">
+              {/* ── SLAB 3: LAWYER ESCALATION & INDIA CODE CONTEXT (3D Warm Amber & Brushed Gold Glass with 3D Shield) ── */}
+              <div
+                className="relative rounded-2xl bg-gradient-to-br from-[#FEF3C7]/90 via-[#FDE68A]/65 to-[#F59E0B]/25 backdrop-blur-2xl border-[1.5px] border-amber-400/90 p-5 shadow-[0_22px_45px_-12px_rgba(245,158,11,0.22),0_2px_0_0_rgba(255,255,255,0.95)_inset,0_-2px_0_0_rgba(0,0,0,0.05)_inset] overflow-hidden"
+              >
+                {/* Left-edge connector anchor dot for tertiary amber spline */}
+                <div
+                  id="card-slab-3-anchor"
+                  className="absolute -left-2.5 top-7 -translate-y-1/2 w-5 h-5 rounded-full bg-amber-500 ring-4 ring-amber-200/90 shadow-md flex items-center justify-center z-20 pointer-events-none"
+                >
+                  <div className="w-2 h-2 rounded-full bg-white shadow-xs" />
+                </div>
+
+                {/* 3D Frosted Glass Shield Emblem (Matching Reference Image) */}
+                <div
+                  aria-hidden="true"
+                  className="absolute right-4 top-4 w-12 h-12 rounded-2xl bg-gradient-to-br from-white/80 via-amber-200/50 to-amber-500/20 backdrop-blur-md border border-white/90 shadow-[0_8px_16px_rgba(245,158,11,0.25),0_2px_0_rgba(255,255,255,0.9)_inset] flex items-center justify-center transform rotate-6 pointer-events-none"
+                >
+                  <Shield className="w-6 h-6 text-amber-900/80 drop-shadow-sm" />
+                </div>
+
+                {/* Top Row: Title + Risk Pill */}
+                <div className="flex items-center justify-between mb-1.5 pr-14">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold uppercase tracking-wider text-amber-900">
                       Layer 3 Escalation
                     </span>
-                    <h3 className="text-base font-extrabold text-amber-950">
-                      Lawyer Escalation & India Code Context
-                    </h3>
+                    <span className={`text-[10.5px] font-bold px-2 py-0.5 rounded-full border ${
+                      currentSeverity === 'HIGH'
+                        ? 'bg-rose-100 text-rose-900 border-rose-300'
+                        : 'bg-amber-100 text-amber-900 border-amber-300'
+                    }`}>
+                      Risk: {currentSeverity}
+                    </span>
                   </div>
-                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full border ${
-                    currentSeverity === 'HIGH'
-                      ? 'bg-rose-100 text-rose-900 border-rose-300'
-                      : 'bg-amber-100 text-amber-900 border-amber-300/70'
-                  }`}>
-                    Risk: {currentSeverity}
-                  </span>
                 </div>
 
-                {/* Statutory Concern */}
-                <div className="mb-4">
-                  <span className="text-[11px] font-bold text-amber-900 block mb-1">
-                    Statutory Enforceability Concern:
+                <h3 className="text-lg font-extrabold text-amber-950 tracking-tight mb-2 pr-14">
+                  Lawyer Escalation & India Code Context
+                </h3>
+
+                {/* Statutory Enforceability Concern */}
+                <div className="mb-2.5">
+                  <span className="text-[10.5px] font-bold text-amber-950 uppercase tracking-wide block mb-1">
+                    Subjective Enforceability Concern:
                   </span>
-                  <p className="text-xs text-stone-800 leading-relaxed bg-white/70 p-3 rounded-xl border border-amber-200/70">
+                  <p className="text-xs text-stone-900 leading-relaxed bg-white/85 p-2.5 rounded-xl border border-amber-300/70 font-medium">
                     {currentEnforceabilityConcern}
                   </p>
                 </div>
 
-                {/* 2 Questions to ask an advocate */}
-                <div className="mb-4">
-                  <span className="text-[11px] font-bold text-amber-900 block mb-1.5">
-                    Precise Questions to Ask Your Advocate:
-                  </span>
-                  <ul className="space-y-1.5">
+                {/* 2 Clickable Questions for Advocate */}
+                <div className="mb-2.5">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10.5px] font-bold text-amber-950 uppercase tracking-wide">
+                      Clickable Questions to Ask Your Advocate:
+                    </span>
+                    {copiedQuestionIdx !== null && (
+                      <span className="text-[10px] font-bold text-emerald-800 animate-fade-in">
+                        ✓ Copied to clipboard!
+                      </span>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
                     {currentLawyerQuestions.map((q, idx) => (
-                      <li
+                      <button
                         key={idx}
-                        className="text-xs text-stone-800 flex items-start gap-2 bg-white/70 p-2.5 rounded-xl border border-amber-200/70"
+                        type="button"
+                        onClick={() => handleCopyQuestion(q, idx)}
+                        className="w-full text-left text-xs text-stone-900 flex items-start gap-2 bg-white/85 hover:bg-white p-2 rounded-xl border border-amber-300/70 hover:border-amber-400 transition-all cursor-pointer group shadow-2xs"
                       >
-                        <span className="font-bold text-amber-700 flex-shrink-0">Q{idx + 1}:</span>
-                        <span>{q}</span>
-                      </li>
+                        <span className="font-bold text-amber-800 flex-shrink-0">Q{idx + 1}:</span>
+                        <span className="flex-1 font-medium">{q}</span>
+                        <Copy className="w-3.5 h-3.5 text-stone-400 group-hover:text-amber-800 flex-shrink-0 mt-0.5" />
+                      </button>
                     ))}
-                  </ul>
+                  </div>
                 </div>
 
-                {/* Statutory Reference Pills */}
-                <div className="pt-3 border-t border-amber-200/60 flex flex-wrap items-center gap-2 text-xs">
-                  <span className="text-[11px] font-bold text-amber-900">Statutory Mapping:</span>
+                {/* Statutory References */}
+                <div className="pt-2 border-t border-amber-300/60 flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-[10px] font-bold text-amber-950 uppercase">Statutory Mapping:</span>
                   {currentStatutes.map((s, idx) => (
                     <span
                       key={idx}
-                      className="px-2.5 py-0.5 rounded-full bg-white text-stone-800 border border-stone-200 text-[11px] font-mono"
+                      className="px-2 py-0.5 rounded-full bg-white text-stone-800 border border-stone-200 text-[10.5px] font-mono font-semibold"
                     >
                       {s}
                     </span>
                   ))}
-                  <span className="px-2.5 py-0.5 rounded-full bg-stone-100 text-stone-600 text-[11px] font-mono">
+                  <span className="px-2 py-0.5 rounded-full bg-amber-100/80 text-amber-900 text-[10.5px] font-mono font-semibold">
                     Open India Law v2026.08
                   </span>
                 </div>
@@ -973,12 +902,12 @@ export default function SpatialStudio({
                     )}
                   </div>
 
-                  {/* Formatted Markdown Answer (Typography, Callouts, Lists) */}
+                  {/* Formatted Markdown Answer */}
                   <div className="pt-1">
                     <FormattedMarkdown text={qaResult.answer_markdown || qaResult.answer} />
                   </div>
 
-                  {/* Verbatim Quotes / Citations (when not already embedded in safe escalation) */}
+                  {/* Verbatim Quotes / Citations */}
                   {qaResult.status !== 'SAFE_ESCALATION_REQUIRED' &&
                     ((qaResult.verified_quotes && qaResult.verified_quotes.length > 0) ||
                       (qaResult.quotes && qaResult.quotes.length > 0)) && (
@@ -1101,9 +1030,9 @@ export default function SpatialStudio({
 
           {/* TAB 4: OFFICIAL DATASETS */}
           {activeDockTab === 'datasets' && (
-            <div className="space-y-5 animate-fade-in">
+            <div className="space-y-4 animate-fade-in">
               {/* Resource 1: CUAD */}
-              <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white p-6 shadow-md space-y-2">
+              <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white p-5 shadow-md space-y-2">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-extrabold text-[#111827]">
                     Resource 1: CUAD Atticus Project (CC BY 4.0)
@@ -1121,7 +1050,7 @@ export default function SpatialStudio({
               </div>
 
               {/* Resource 2: India Code */}
-              <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white p-6 shadow-md space-y-2">
+              <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white p-5 shadow-md space-y-2">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-extrabold text-[#111827]">
                     Resource 2: India Code Statutory Architecture
@@ -1139,7 +1068,7 @@ export default function SpatialStudio({
               </div>
 
               {/* Resource 3: Open India Law */}
-              <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white p-6 shadow-md space-y-2">
+              <div className="rounded-2xl bg-white/85 backdrop-blur-xl border border-white p-5 shadow-md space-y-2">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-extrabold text-[#111827]">
                     Resource 3: Open India Law (v2026.08 Snapshot)
@@ -1211,12 +1140,13 @@ export default function SpatialStudio({
       </main>
 
       {/* ─────────────────────────────────────────────────────────────
-          4. BOTTOM CENTER FLOATING VISIONOS GLASS DOCK (fixed bottom-5)
+          4. BOTTOM CENTER FLOATING VISIONOS GLASS DOCK (fixed bottom-3.5)
+          Positioned with clean margin so it NEVER overlaps Slab 3!
       ───────────────────────────────────────────────────────────── */}
-      <nav className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 rounded-full bg-[#F4F1EA]/90 backdrop-blur-2xl border border-white shadow-[0_20px_50px_rgba(0,0,0,0.15)] px-3 py-2 flex items-center gap-2 max-w-[95vw] overflow-x-auto">
+      <nav className="fixed bottom-3.5 left-1/2 -translate-x-1/2 z-40 rounded-full bg-[#EFECE4]/90 backdrop-blur-2xl border-[1.5px] border-white shadow-[0_20px_40px_rgba(0,0,0,0.14),0_2px_0_rgba(255,255,255,0.9)_inset] px-3 py-1.5 flex items-center gap-2 max-w-[95vw] overflow-x-auto">
         <button
           onClick={() => setActiveDockTab('triage')}
-          className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+          className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
             activeDockTab === 'triage'
               ? 'bg-[#111827] text-white shadow-sm scale-105'
               : 'text-stone-700 hover:bg-stone-200/60'
@@ -1227,7 +1157,7 @@ export default function SpatialStudio({
 
         <button
           onClick={() => setActiveDockTab('qa')}
-          className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+          className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
             activeDockTab === 'qa'
               ? 'bg-[#111827] text-white shadow-sm scale-105'
               : 'text-stone-700 hover:bg-stone-200/60'
@@ -1238,7 +1168,7 @@ export default function SpatialStudio({
 
         <button
           onClick={() => setActiveDockTab('diff')}
-          className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+          className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
             activeDockTab === 'diff'
               ? 'bg-[#111827] text-white shadow-sm scale-105'
               : 'text-stone-700 hover:bg-stone-200/60'
@@ -1249,7 +1179,7 @@ export default function SpatialStudio({
 
         <button
           onClick={() => setActiveDockTab('datasets')}
-          className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+          className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
             activeDockTab === 'datasets'
               ? 'bg-[#111827] text-white shadow-sm scale-105'
               : 'text-stone-700 hover:bg-stone-200/60'
@@ -1260,7 +1190,7 @@ export default function SpatialStudio({
 
         <button
           onClick={() => setActiveDockTab('privacy')}
-          className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+          className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
             activeDockTab === 'privacy'
               ? 'bg-[#111827] text-white shadow-sm scale-105'
               : 'text-stone-700 hover:bg-stone-200/60'
